@@ -1,0 +1,86 @@
+# Two independent PostgreSQL 17 servers share one host backup folder.
+# pg-source is the database we back up.
+# pg-target is a new instance that is restored from that same folder.
+# Data directories stay in Docker volumes. Only backup files are written to ./backup.
+
+services:
+  pg-source:
+    image: postgres:17
+    container_name: pg-incr-source
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appdb
+      # Local POC only. Trust lets pg_basebackup connect without a password prompt.
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=replica
+      # Required for PostgreSQL 17 incremental pg_basebackup.
+      - -c
+      - summarize_wal=on
+      - -c
+      - wal_summary_keep_time=7d
+      - -c
+      - max_wal_senders=10
+    ports:
+      - "5432:5432"
+    shm_size: 256mb
+    volumes:
+      - pg_source_data:/var/lib/postgresql/data
+      - ./backup:/backup
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 2s
+      timeout: 5s
+      retries: 40
+      start_period: 5s
+
+  pg-target:
+    image: postgres:17
+    container_name: pg-incr-target
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appdb
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=replica
+      - -c
+      - summarize_wal=on
+    ports:
+      - "5433:5432"
+    shm_size: 256mb
+    volumes:
+      - pg_target_data:/var/lib/postgresql/data
+      # Same host folder the source writes backups into.
+      - ./backup:/backup
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 2s
+      timeout: 5s
+      retries: 40
+      start_period: 5s
+
+  # One-off helper used only to run pg_combinebackup against the target volume.
+  # A normal `docker compose up` does not start it.
+  pg-tools:
+    image: postgres:17
+    user: root
+    entrypoint: ["sleep", "infinity"]
+    profiles: ["tools"]
+    volumes:
+      - pg_target_data:/var/lib/postgresql/data
+      - ./backup:/backup
+
+volumes:
+  pg_source_data:
+  pg_target_data:
